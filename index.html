@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Photo Color Analysis Web App</title>
+    <style>
+        .video-container {
+            position: relative;
+            width: 640px;
+            height: 480px;
+        }
+
+        #webcam {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 640px;
+            height: 480px;
+            border: 1px solid black;
+        }
+
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 640px;
+            height: 480px;
+            pointer-events: none;
+        }
+
+        #capturedImage {
+            width: 320px;
+            height: 240px;
+            border: 1px solid black;
+            margin-left: 20px;
+        }
+
+        #results {
+            margin-top: 20px;
+        }
+
+        .color-swatch {
+            display: inline-block;
+            width: 100px;
+            height: 100px;
+            margin-right: 10px;
+        }
+
+        .container {
+            display: flex;
+            align-items: flex-start;
+        }
+    </style>
+</head>
+<body>
+    <h1>Photo Color Analysis Web App</h1>
+    <div class="container">
+        <div class="video-container">
+            <video id="webcam" autoplay playsinline></video>
+            <canvas id="overlay"></canvas>
+        </div>
+        <div>
+            <canvas id="capturedImage"></canvas>
+            <div id="results"></div>
+        </div>
+    </div>
+    <br>
+    <button id="snap">Capture Photo</button>
+
+    <!-- Load face-api.js -->
+    <script src="dist/face-api.min.js"></script>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('overlay');
+        const capturedCanvas = document.getElementById('capturedImage');
+        const colorOutput = document.getElementById('results');
+
+        // Predefined clothing color suggestions for different skin tones
+        const skinToneRecommendations = [
+            { tone: "light", colors: ["#FFB6C1", "#87CEEB", "#FFDEAD", "#98FB98", "#ADD8E6"] },
+            { tone: "medium", colors: ["#FFD700", "#FF4500", "#32CD32", "#8A2BE2", "#00CED1"] },
+            { tone: "dark", colors: ["#FF6347", "#1E90FF", "#006400", "#FFD700", "#8B4513"] }
+        ];
+
+        // Start webcam video stream
+        async function startVideo() {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+            video.srcObject = stream;
+        }
+
+        // Load models and run detection
+        async function loadModels() {
+            await faceapi.nets.tinyFaceDetector.loadFromUri('weights/');
+            await faceapi.nets.faceLandmark68Net.loadFromUri('weights/');
+            startVideo();
+        }
+
+        // Ensure the video metadata is loaded for proper detection
+        video.addEventListener('loadedmetadata', () => {
+            const displaySize = { width: video.videoWidth, height: video.videoHeight };
+            faceapi.matchDimensions(canvas, displaySize);
+
+            setInterval(async () => {
+                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+                const resizedDetections = faceapi.resizeResults(detections, displaySize);
+
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Draw face detection box and landmarks on the video feed
+                faceapi.draw.drawDetections(canvas, resizedDetections);
+                faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
+            }, 100);
+        });
+
+        // Capture a photo
+        document.getElementById('snap').addEventListener('click', async () => {
+            const displaySize = { width: video.videoWidth, height: video.videoHeight };
+            capturedCanvas.width = displaySize.width / 2; // scale down the image
+            capturedCanvas.height = displaySize.height / 2;
+            const ctx = capturedCanvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, capturedCanvas.width, capturedCanvas.height);
+
+            // Perform face detection on the captured image
+            const detections = await faceapi.detectAllFaces(capturedCanvas, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+            if (detections.length > 0) {
+                const detection = detections[0].detection;
+                const avgColor = extractFaceColor(capturedCanvas, detection);
+                displayColor(avgColor);
+            } else {
+                alert("No face detected in the captured photo.");
+            }
+        });
+
+        // Extract color from face region
+        function extractFaceColor(canvas, detection) {
+            const { x, y, width, height } = detection.box;
+            const ctx = canvas.getContext('2d');
+            const imageData = ctx.getImageData(x, y, width, height);
+            return calculateAverageColor(imageData);
+        }
+
+        // Calculate average color and convert to HEX
+        function calculateAverageColor(imageData) {
+            let r = 0, g = 0, b = 0;
+            const totalPixels = imageData.data.length / 4;
+            for (let i = 0; i < imageData.data.length; i += 4) {
+                r += imageData.data[i];
+                g += imageData.data[i + 1];
+                b += imageData.data[i + 2];
+            }
+            r = Math.floor(r / totalPixels);
+            g = Math.floor(g / totalPixels);
+            b = Math.floor(b / totalPixels);
+
+            return rgbToHex(r, g, b);
+        }
+
+        // Convert RGB to HEX
+        function rgbToHex(r, g, b) {
+            return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase()}`;
+        }
+
+        // Determine the skin tone and recommend colors
+        function recommendColors(hex) {
+            const skinTone = getSkinTone(hex);
+            const recommendation = skinToneRecommendations.find(rec => rec.tone === skinTone);
+            if (recommendation) {
+                return recommendation.colors;
+            }
+            return [];
+        }
+
+        // Approximate skin tone based on brightness
+        function getSkinTone(hex) {
+            const r = parseInt(hex.slice(1, 3), 16);
+            const g = parseInt(hex.slice(3, 5), 16);
+            const b = parseInt(hex.slice(5, 7), 16);
+            const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+            if (brightness > 200) return "light";
+            if (brightness > 100) return "medium";
+            return "dark";
+        }
+
+        // Display color and hex code, including recommendations
+        function displayColor(hex) {
+            const colorDiv = document.createElement('div');
+            colorDiv.className = 'color-swatch';
+            colorDiv.style.backgroundColor = hex;
+            colorDiv.innerText = `${hex}`;
+            colorOutput.innerHTML = ''; // Clear previous colors
+            colorOutput.appendChild(colorDiv);
+
+            // Display recommended clothing colors
+            const recommendedColors = recommendColors(hex);
+            recommendedColors.forEach(color => {
+                const swatch = document.createElement('div');
+                swatch.className = 'color-swatch';
+                swatch.style.backgroundColor = color;
+                swatch.innerText = color;
+                colorOutput.appendChild(swatch);
+            });
+        }
+
+        loadModels();
+    </script>
+</body>
+</html>
